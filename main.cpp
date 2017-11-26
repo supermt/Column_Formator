@@ -1,185 +1,26 @@
-#include <iostream>
-#include <cstring>
-#include <fstream>
-#include <vector>
-
-
-#define TableDescription "timestamp:timestamp,server_ip:string,client_ip:string,empty:string"
-
-//#define MAX_LINE_LENGTH 1024
-#define SourceFilePath "/home/supermt/codes/source"
-
-
-#define TYPE_LONG 0
-#define TYPE_STRING 1
-#define TYPE_TIMESTAMP 2
-#define TYPE_EMPTY 3
-
-#define MAX_STRING_SIZE 500
-
-
-#define TIME_STAMP_FORMAT "%Y-%m-%d %H:%M:%S"
-using namespace std;
-
-
-typedef unsigned char BYTE;
-typedef BYTE HEAD_COUNTER[2];
-
-struct Column_Unit {
-    unsigned long row;
-    union Column_Value {
-        long numeric_value;
-        BYTE *string_value; // add 2 more bytes for the head counter
-    } value;
-};
-
-struct Column_Description {
-    int type;
-    string column_name;
-};
-
-
-void SplitString(const std::string &s, std::vector<std::string> &v, const std::string &c) {
-    std::string::size_type pos1, pos2;
-    pos2 = s.find(c);
-    pos1 = 0;
-    while (std::string::npos != pos2) {
-        v.push_back(s.substr(pos1, pos2 - pos1));
-
-        pos1 = pos2 + c.size();
-        pos2 = s.find(c, pos1);
-    }
-    if (pos1 != s.length())
-        v.push_back(s.substr(pos1));
-}
-
-
-void intToHeadCounter(unsigned int num, HEAD_COUNTER result) {
-
-    // codes below is only suitable for BIG-ENDIAN
-    BYTE byteNum[4];
-    for (int i = 0; i < 4; i++) {
-        int offset = 32 - (i + 1) * 8;
-        byteNum[i] = (BYTE) ((num >> offset) & 0xff);
-    }
-    int ENDIAN = BYTE_ORDER == 1234 ? 0 : 1; // if the BYTE_ORDER is 1234, it means this machine is using lit_endian
-    result[0] = byteNum[2 - 2 * ENDIAN]; // if the CPU use BIG_ENDIAN, there is no need for transforming
-    result[1] = byteNum[3 - 2 * ENDIAN]; // if the CPU use LIT_ENDIAN, need to offset for two bytes
-    return;
-
-}
-
-
-long readAsText(const char *file_path, vector<Column_Description> column_desc, vector<Column_Unit> column_array[]) {
-    ifstream in(file_path);
-    string filename;
-    string line;
-    int wordCount = 0;
-    unsigned long row_counter = 0;
-    if (in) {
-        while (getline(in, line)) {
-            // read a single line, split it into a vector of string by '\t'
-            vector<string> columns;
-            SplitString(line, columns, "\t");
-            int column_pointer = 0;
-            // process every single row
-            for (column_pointer = 0; column_pointer < columns.size(); column_pointer++) {
-                string val = columns[column_pointer];
-                row_counter++;
-                Column_Unit unit_value;
-                unit_value.row = row_counter;
-
-                // judge the column type
-                switch (column_desc[column_pointer].type) {
-                    case TYPE_LONG: {
-                        if (!val.size()) {
-                            // condition for an empty long value
-                            unit_value.value.numeric_value = INT64_MIN;
-                        } else {
-                            // fill the column unit by a long type
-                            unit_value.value.numeric_value = atol(val.c_str());
-                        }
-                        break;
-                    }
-                    case TYPE_TIMESTAMP: {
-                        // transform the string into a long argument, then store it as a long
-                        long time_result;
-//                        cout << "transforming: " << val << endl;
-                        tm time_struct;
-                        strptime(val.c_str(), TIME_STAMP_FORMAT, &time_struct);
-                        time_result = mktime(&time_struct);
-//                        cout << "transform result: " << time_result << endl; // 1511175296 2017/11/20 18:54:56
-                        unit_value.value.numeric_value = time_result;
-                        break;
-                    }
-                    case TYPE_STRING: {
-                        // add a two-byte counter in the front of each string as the offset of this string
-                        HEAD_COUNTER length;
-                        intToHeadCounter(val.length(), length);
-                        /*
-                         * char a[] = "ab";
-                         * BYTE* pByte = static_cast<BYTE*> (a);
-                         * 因为BYTE: An 8-bit integer that is not signed
-                         * 它和unsigned char可以安全转换.
-                         * */
-                        // invoke a block of memory, which can contain the whole string and its head counter
-                        // remember an additional char position for '\0'
-                        unit_value.value.string_value = static_cast<BYTE *>(calloc(2 + val.length() + 1, sizeof(char)));
-                        unit_value.value.string_value[0] = length[0];
-                        unit_value.value.string_value[1] = length[1];
-                        int pointer = 2;
-                        for (char ch:val) {
-                            unit_value.value.string_value[pointer] = ch;
-                        }
-                        break;
-                    }
-                }
-
-                column_array[column_pointer].push_back(unit_value);
-                wordCount += val.length();
-            }
-
-        }
-    } else {
-        cout << "no such file" << endl;
-    }
-
-    return wordCount;
-}
-
-
-vector<Column_Description> phrase_table(std::string table_description) {
-    vector<string> columns;
-    SplitString(table_description, columns, ",");
-    vector<Column_Description> result;
-    for (string column:columns) {
-        Column_Description temp;
-        int pos = column.find(':');
-
-        temp.column_name = column.substr(0, pos);
-
-        string column_type = column.substr(pos + 1);
-        if (column_type == "long") {
-            temp.type = TYPE_LONG;
-        } else if (column_type == "timestamp") {
-            temp.type = TYPE_TIMESTAMP;
-        } else {
-            temp.type = TYPE_STRING;
-        }
-        result.push_back(temp);
-    }
-
-    return result;
-}
+#include "untils.h"
 
 int main() {
+
+    using namespace std;
 
     vector<Column_Description> column_description = phrase_table(TableDescription);
 
     int column_count = column_description.size();
 
+    vector<int> long_column;
+
+    vector<int> string_column;
+
+    int index = 0;
     for (Column_Description column:column_description) {
-        cout << "column name: " << column.column_name << "\tcolumn type: " << column.type << endl;
+        cout << index << "\tcolumn name: " << column.column_name << "\tcolumn type: " << column.type << endl;
+        if (column.type == TYPE_STRING) {
+            string_column.push_back(index);
+        } else {
+            long_column.push_back(index);
+        }
+        index++;
     }
 
     vector<Column_Unit> column_array[column_count];
@@ -189,12 +30,171 @@ int main() {
 
     std::cout << "have read " << readlength << " characters from file" << std::endl;
 
-    std::cout << "contains " << column_array[0].size() << " rows total" << std::endl;
+    int row_total = column_array[0].size();
+
+    std::cout << "contains " << row_total << " rows total" << std::endl;
 
     // now we get a vector, for each of the vector, contains a array of data
 
     // using alloc will cost too much memory resource, please remember use free each time finished using the block
 
+    // the max block size is 4MB (according to recent testing data and discussion)
+
+    // process the long type first
+    for (int long_index:long_column) {
+        vector<Long_Column> tempColumn;
+        long group_pointer = 0;
+        cout << column_array[long_index].size() << endl;
+        for (int row = 0; row < row_total; row++) {
+            if (row >= column_array[long_index].size()) break; // if this column is totally empty, break out
+            // for each cell
+            // if the empty signal has been set to empty
+            if (!column_array[long_index][row].value.empty) {
+                Long_Column cell;
+                cell.value = column_array[long_index][row].value.numeric_value;
+                cell.row = column_array[long_index][row].row;
+                tempColumn.push_back(cell);
+            }
+        }
+
+        char file_name[20];
+        sprintf(file_name, "column_%d", long_index);
+        string target_file = TargetDirPrefix;
+        target_file.append(file_name);
+        FILE *target_fd = fopen(target_file.c_str(), "wb");
+        cout << target_file << endl;
+        // load each unit in tempColumn
+        // for each 256 row, combine them into a group
+        // record the base offset(group set) as the index of this group and how many rows the group contains
+
+        for (long j = 0; j < tempColumn.size(); j += MAX_OFFSET) {
+            int i = 0;
+            long group_set = 0 + j;
+            BYTE byte_row[9 * MAX_OFFSET];
+            memset(byte_row, 0, 9 * MAX_OFFSET);
+            int offset = 0;
+            vector<long> value_area;
+            value_area.push_back(99999);
+            while (true) {
+                Long_Column cell = tempColumn[i + group_set];
+                if (value_area[0] != cell.value) value_area.push_back(cell.value);
+                offset = cell.row - group_set;
+                // for each row in the group
+                // + ------- + --------------------- +
+                // | 1 byte  | 8 byte  ..............|
+                // + ------- + --------------------- +
+                addOneByte(byte_row, 0 + i * 9, (offset - 1));
+                addLongAsBytes(byte_row, 1 + i * 9, cell.value);
+                i++;
+                if (offset >= MAX_OFFSET) break;
+                if (group_set + i >= tempColumn.size()) break;
+            }
+            // offset is bigger than MAX_OFFSET , skip to the next group
+
+
+            BYTE group[10000];
+
+            // for the group head
+            // + ------------------- + ----------------------------------- +
+            // | total rows (1byte)  | start index (8 byte)  ..............|
+            // + ------------------- + ----------------------------------- +
+            int byte_pointer = 0;
+            // total rows usually equals to i
+            byte_pointer = addOneByte(group, byte_pointer,
+                                      (unsigned char) i); // when i equals 256 , it will be transformed to 0
+            byte_pointer = addLongAsBytes(group, byte_pointer, group_set);
+            byte_pointer = mergeByteArrays(byte_row, i * 9, group, byte_pointer);
+            fwrite(group, sizeof(BYTE), byte_pointer, target_fd);
+            group_pointer += byte_pointer;
+        }
+        fclose(target_fd);
+    }
+
+    // process the string columns
+    for (int string_index:string_column) {
+        vector<String_Column> tempColumn;
+        long group_pointer = 0;
+        for (int row = 0; row < row_total; row++) {
+            if (row >= column_array[string_index].size()) break; // if this column is totally empty, break out
+            // for each cell
+            // if the empty signal has been set to empty
+            if (!column_array[string_index][row].value.empty) {
+                String_Column cell;
+                cell.value = column_array[string_index][row].value.string_value;
+                cell.row = column_array[string_index][row].row;
+                tempColumn.push_back(cell);
+            }
+        }
+
+        char file_name[20];
+        sprintf(file_name, "column_%d", string_index);
+        string target_file = TargetDirPrefix;
+        target_file.append(file_name);
+        FILE *target_fd = fopen(target_file.c_str(), "wb");
+        cout << target_file << endl;
+        // load each unit in tempColumn
+        // for each 256 row, combine them into a group
+        // record the base offset(group set) as the index of this group and how many rows the group contains
+
+        for (long j = 0; j < tempColumn.size(); j += MAX_OFFSET) {
+            int i = 0;
+            long group_set = 0 + j;
+            vector<BYTE> byte_row;
+
+            while (true) {
+                String_Column cell = tempColumn[i + group_set];
+                int offset = cell.row - group_set;
+                // for each string in the group
+                // + ------- + ---------------------- + ------------------------------------- +
+                // | 1 byte  | 2 byte (string length) | n byte (record in string length)  ....|
+                // + ------- + ---------------------- + ------------------------------------- +
+
+                byte_row.push_back((unsigned char) (offset - 1));
+                BYTE length[2];
+                intToHeadCounter(cell.value.length(), length);
+                byte_row.push_back(length[0]);
+                byte_row.push_back(length[1]);
+
+                for (unsigned char ch : cell.value) {
+                    byte_row.push_back(ch);
+                }
+
+                i++;
+                if (offset >= MAX_OFFSET) break;
+                if (group_set + i >= tempColumn.size()) break;
+            }
+            // offset is bigger than MAX_OFFSET , skip to the next group
+
+            int byte_count = byte_row.size() + 1 + 8;
+
+            BYTE *group;
+            group = static_cast<BYTE *>(calloc(sizeof(BYTE), byte_count));
+
+            // for the group head
+            // + ------------------- + ----------------------------------- +
+            // | total rows (1byte)  | start index (8 byte)  ..............|
+            // + ------------------- + ----------------------------------- +
+            int byte_pointer = 0;
+            // total rows usually equals to i
+            byte_pointer = addOneByte(group, byte_pointer, (unsigned char) i);
+            byte_pointer = addLongAsBytes(group, byte_pointer, group_set);
+
+            int data_length = byte_row.size();
+
+            for (int i = 0; i < data_length; i++) {
+                group[byte_pointer + i] = byte_row[i];
+            }
+
+            byte_pointer += byte_row.size();
+
+            fwrite(group, sizeof(BYTE), byte_pointer, target_fd);
+            free(group);
+            group_pointer += byte_pointer;
+        }
+        fclose(target_fd);
+    }
+
+    cout << "data transformed, view" << TargetDirPrefix << endl;
 
     return 0;
 }
